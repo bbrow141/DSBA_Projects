@@ -56,7 +56,7 @@ EDA will help to give insight of data and understand latest trends. To explore d
 
 1. Top 15 Countries where the Death Rate is high.
 
-![country_vs_deaths](/images/country_vs_deaths.png)
+![country_vs_deaths](/country_vs_deaths.png)
 
 2. Countries with highest Obesity Rate.
 
