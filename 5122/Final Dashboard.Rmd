@@ -1,0 +1,170 @@
+---
+title: "African American Achievements"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+```
+
+Row 
+-----------------------------------------------------------------------
+
+### Chart A
+
+```{r, fig.width=20, fig.height=7}
+#install.packages("tidyverse")
+#install.packages("RColorBrewer")
+#install.packages("viridis")
+library(plotly)
+library(tidyverse)
+#library(viridis) 
+library(RColorBrewer)
+
+firsts <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-06-09/firsts.csv')
+
+firsts <- firsts %>% 
+  mutate(decade = year - year %% 10) %>% 
+  group_by(decade) %>% 
+  arrange(category) %>% 
+  mutate(index = row_number()) %>% 
+  ungroup()
+
+
+p1 <- 
+  ggplot(firsts, aes(decade, 1, group = index, fill = category),background = 'black') + 
+  #scale_color_viridis(option = "B")+
+  scale_fill_brewer(palette = "RdYlBu")+
+  #scale_color_viridis(discrete = TRUE, option = "A")+
+  #scale_fill_viridis(discrete = TRUE) +
+  #geom_point() # +
+  geom_bar(stat = 'identity',
+           width = 8,
+           color = "#FFFFFF",
+           size = .5) + 
+  scale_x_continuous(
+                     breaks = seq(1730, 2030, by = 10),
+                     labels = paste0(seq(1730, 2030, by = 10), "s"),
+                     expand = c(0, 1)) +
+  scale_y_continuous(expand = c(0, 1)) +
+  theme(
+  # Remove panel border
+  panel.border = element_blank(),  
+  # Remove panel grid lines
+  panel.grid.major = element_blank(),
+  panel.grid.minor = element_blank(),
+  panel.grid.major.y = element_line(color = "white"),
+  # Remove panel background
+  panel.background = element_rect(fill = "white" ), #element_blank(),
+  # Add axis line
+  axis.line = element_line(colour = "grey")
+  )+
+  labs(caption = "",
+           title = "Achievements of African-Americans",
+           x = "", y = "Number of Achievements") +
+  
+  annotate("text", x = 1737, y = 15, 
+           label = "1738: First free African-American\n community, Gracia Real de Santa\n Teresa de Mose in Florida", 
+           hjust = 0, size = 3,color = "gray15", family = "Sans") +
+      geom_curve(aes(x = 1735, y = 15, xend = 1730, yend = 1.5), size = 0.2,
+             curvature = 0.15, color = "gray15") +
+  
+  annotate("text", x = 1868, y = 30, label = "1865: Ratification of\nthe 13th Amendment,\nAbolishment of slavery", 
+           hjust = 0, size = 3, color = "gray15", family = "Sans") +
+      geom_curve(aes(x = 1865, y = 30, xend = 1860, yend = 19), size = 0.2,
+             curvature = 0.2, color = "gray15") +
+  
+  annotate("text", x = 1910, y = 50, label = "1950s - 1960s:\n Civil Rights Movement", 
+           hjust = 0, size = 3, color = "gray15", family = "Calibri") +
+      #geom_curve(aes(x = 1865, y = 34, xend = 1860, yend = 19), size = 0.1,
+             #curvature = 0.2, color = "gray15") +
+  
+ theme(axis.line = element_line(size = 0.5, colour = "black"),
+            plot.title = element_text(family = "Sans",
+                                               size = rel(1.2), face = "bold",
+                                               hjust = 0.5),
+            plot.subtitle = element_text(family = "Sans", 
+                                                  size = rel(1.2), hjust = 0.5),
+          axis.title.x = element_text(family = "Sans", size = rel(1.0), hjust = 0.5),
+          axis.title.y = element_text(family = "Sans", 
+                                      size = rel(1),
+                                      hjust = .5),
+          axis.text.x = element_text(vjust=0.6, size=6.5, angle=70, face="bold"))
+
+p1
+
+ggsave("african-american-achievements.jpg", width=9.57, height=6.92, dpi=600)
+```
+
+Row
+-----------------------------------------------------------------------
+### Chart B
+
+```{r}
+library("plotly")
+ggplotfirsts<-firsts%>%
+  count(category, sort  = TRUE) %>%
+  mutate(category = fct_reorder(category, n)) %>%
+  ggplot(aes(x = n, y = category, fill = category)) +
+  scale_fill_brewer(palette = "RdYlBu")+
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = paste(n, sep = "")), size = 3,
+                hjust = -0.25, vjust = -0.25, 
+                position = position_dodge(.5)) +
+  labs(caption = "",
+       title = "Distribution of achivements of African-Americans",
+       x = "Count", y = "Category") +
+  theme(axis.line = element_line(size = 0.5, colour = "black"),
+        panel.background = element_rect(fill = "white"),
+        plot.title = element_text(family = "Sans",
+                     size = rel(1.2), face = "bold",
+                     hjust = 1, vjust = 1),
+         plot.subtitle = element_text(family = "Sans", 
+                        size = rel(1.2), hjust = 1, vjust = 1),
+         axis.title.x = element_text(family = "Sans", 
+                                      size = rel(1.0),hjust = .5),
+          axis.title.y = element_text(family = "Sans", 
+                                       size = rel(1.0),
+                                       hjust = .5)) 
+
+ggplotfirsts
+```
+Row
+-----------------------------------------------------------------------
+
+### Chart C
+
+```{r}
+#install.packages("plotly")
+library("plotly")
+library("glue")
+gfirsts<-firsts%>% ggplot(aes(x=year,y=category,color=category,text=glue("{year}:{accomplishment}\n{person}")))+
+  scale_color_brewer(palette = "RdYlBu")+
+  geom_point()+
+  labs(title = "Timeline of African-American Achievements",subtitle = "Source:https://en.wikipedia.org/wiki/List_of_African-American_firsts", y="Category",x="Year")+
+  theme( axis.text.y = element_blank(),
+         axis.ticks.y=element_blank(),
+         panel.grid.major.y = element_blank(),
+         panel.grid.minor.y = element_blank(),
+         panel.background = element_rect(fill = "white"),
+         #legend.position = "none",
+          plot.title = element_text(family = "Sans",
+                     size = rel(1.2), face = "bold",
+                     hjust = 1, vjust = 1),
+         plot.subtitle = element_text(family = "Sans", 
+                        size = rel(1.2), hjust = 1, vjust = 1),
+         axis.title.x = element_text(family = "Sans", 
+                                      size = rel(1.2),hjust = .5),
+          axis.title.y = element_text(family = "Sans", 
+                                       size = rel(1.2),
+                                       hjust = .5) 
+    
+  )
+ggplotly(gfirsts,tooltip = "text") 
+```
+
+
+
