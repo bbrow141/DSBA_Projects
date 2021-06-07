@@ -1,0 +1,400 @@
+---
+title: "Models"
+author: "Ivan Flores"
+date: "May 1, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Advanced Business Analytics Group Project
+
+*Group Members:*
+
+1. Ivan Flores Martinez
+2. Ellijah Ellison
+3. Tristan Richard
+4. Bailey Brown
+5. Ryon Ripper
+
+## Intro
+
+Airbnb has become increasingly popular among travelers for accommodation across the world. Accordingly, there are large datasets being collected from the Airbnb listings with rich features. In this project, we aim to predict Airbnb listing price in Asheville with various machine learning approaches.
+
+Airbnb pricing is important to get right, particularly in cities like Asheville where there is lots of competition and even small differences in prices can make the difference between optimum occupancy and high earnings, or being priced out of the market. It is also a difficult thing to do correctly, in order to balance the price with occupancy (which varies inversely with price) in order to maximise revenue.
+
+### Load the complete dataset for Ashville
+
+```{r}
+library(readxl)
+Airbnb_asheville_merged <-read_excel("C:/Users/trist/OneDrive/Desktop/Airbnb_asheville_merged.xlsx")
+
+
+head(Airbnb_asheville_merged)
+
+# Rename the database 
+asheville <- Airbnb_asheville_merged
+```
+
+Features are chosen only if they are informative and are likely to correlated with the listing's price. Therefore, we eliminated features like id and host id, which appear to be noise, features like location and country, where the majority of the data take the same value, and features like minstay, where the majority of the data are null.
+
+```{r}
+#remove variables
+library (tidyverse)
+asheville <- asheville %>% select(-c(borough))
+asheville <- asheville %>% select(-c(minstay))
+asheville <- asheville %>% select(-c(country))
+asheville <- asheville %>% select(-c(bathrooms))
+asheville <- asheville %>% select(-c(survey_id))
+asheville <- asheville %>% select(-c(name))
+asheville <- asheville %>% select(-c(location))
+asheville <- asheville %>% select(-c(city))
+```
+
+We removed duplicate listings in the dataset.
+```{r}
+#dataset with each unique listing 
+asheville_newest <- asheville %>%
+  arrange(room_id, desc(last_modified)) %>% 
+  distinct(room_id, .keep_all = TRUE)
+```
+
+We identified missing values in the dataset and impute the missings values with the mean.
+```{r}
+# Count missing values in variables
+sum(is.na(asheville_newest$overall_satisfaction))
+sum(is.na(asheville_newest$reviews))
+sum(is.na(asheville_newest$accommodates))
+sum(is.na(asheville_newest$bedrooms))
+sum(is.na(asheville_newest$price))
+sum(is.na(asheville_newest$latitude))
+sum(is.na(asheville_newest$longitude))
+
+# Impute the missing values in overall satisfaction
+asheville_newest$overall_satisfaction[is.na(asheville_newest$overall_satisfaction)] <- mean(asheville_newest$overall_satisfaction, na.rm = TRUE)
+
+sum(is.na(asheville_newest$overall_satisfaction))
+```
+
+We created a new variable using the current latitude and longitude variables which calculates the distance of each listing from a central point in downtime Ashville. 
+
+```{r}
+# Create reference point data
+library(sf)
+library(data.table)
+point <- data_frame(mylon = -82.5540, mylat = 35.5946) 
+
+# Specify the source of X and Y coordinates
+point_sf <- st_as_sf(point, coords = c("mylon", "mylat"))
+
+# Set the projection to EPSG 4326 (long-lat)
+st_crs(point_sf) <- 4326
+
+#create target point data
+target <- asheville_newest %>% select(room_id, longitude, latitude)
+                              
+# Convert data.frame to data.table
+setDT(target)
+
+class(target)
+
+# Specify the source of X and Y coordinates
+target_sf <- st_as_sf(target, coords = c("longitude", "latitude"))
+
+# Set the projection to EPSG 4326 (long-lat)
+st_crs(target_sf) <- 4326
+
+# Calculate the distance
+##distance is in Meters
+target_sf2 <- target_sf %>%
+  mutate(Dist = as.numeric(st_distance(point_sf, target_sf, by_element = TRUE))) 
+target_sf2
+
+#add distance to orig. df 
+Asheville_new <- asheville %>%
+  inner_join(target_sf2 , by = "room_id")
+
+#add distance to new df 
+Asheville_new_modified <- asheville_newest %>%
+  inner_join(target_sf2, by = "room_id")
+
+str(Asheville_new_modified)
+
+#remove unnecessary variable 
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(geometry))
+```
+
+We create PCAs for highly correlated variables.
+
+```{r}
+# Correlate the variables
+cor(Asheville_new_modified$bedrooms, Asheville_new_modified$accommodates)
+
+head(Asheville_new_modified)
+
+# Create database for pca
+pca_data <- Asheville_new_modified[,c(7:9)]
+pca <- prcomp(pca_data,center=TRUE,scale. = TRUE)
+print(pca)
+plot(pca,type='l')
+summary(pca)
+
+# Plot PCA
+library(factoextra)
+fviz_eig(pca)
+fviz_pca_var(pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+
+# Predict PCA
+pred_pca <- predict(pca, newdata=pca_data)
+
+# Create dataset for PC values and categorical variables
+Asheville_new_modified <- cbind.data.frame(Asheville_new_modified,pred_pca[,c(1)])
+
+#Rename principal component
+names(Asheville_new_modified)[names(Asheville_new_modified) == 'pred_pca[, c(1)]'] <- 'property_capacity'
+```
+
+We check the distribution of numeric variables to see if they satisfy the normality assumption for the linear regression model. 
+
+```{r}
+library(plyr)
+library(psych)
+multi.hist(Asheville_new_modified[,sapply(Asheville_new_modified, is.numeric)])
+```
+
+Several variables are skewed. Consequently, we need to apply a square root transformation or a logarithmic transformation to the variables. We choose to transform everything to log. 
+```{r}
+# Convert variable to log
+
+Asheville_new_modified$price_log <- log(Asheville_new_modified$price + 1)
+Asheville_new_modified$reviews_log <- log(Asheville_new_modified$reviews + 1)
+Asheville_new_modified$Dist_log <- log(Asheville_new_modified$Dist + 1)
+head(Asheville_new_modified)
+```
+
+The transformation improved the distribution of some of the variables. See price_log, reviews_log and distance_log. 
+
+```{r}
+library(plyr)
+library(psych)
+multi.hist(Asheville_new_modified[,sapply(Asheville_new_modified, is.numeric)])
+```
+
+Other variables remained with polar distributions (see overall_satisfaction). Consequently, we created a dummy variable that captures if the custumer was satisfied with the room or not. 
+
+```{r}
+# Transform overall_satisfaction to dummy
+Asheville_new_modified$high_satisfaction <- ifelse(Asheville_new_modified$overall_satisfaction < 4,0,1)
+```
+
+In addition, we transformed the categorical variables into dummies and renamed them. 
+
+```{r}
+#Dummy variable for room_type
+library(fastDummies)
+
+Asheville_new_modified <- dummy_cols(Asheville_new_modified, select_columns = 'room_type')
+
+#Dummy variable for neighbourhood
+Asheville_new_modified <- dummy_cols(Asheville_new_modified, select_columns = 'neighborhood')
+
+#Rename dummy columns associated with neighborhood
+
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Asheville" = "Asheville"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Richmond Hill" = "Richmond_Hill"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Formerly ETJ" = "Formerly_ETJ"))
+
+#Rename dummy columns associated with room type
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Entire home/apt" = "Entire_Home_Apt"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Private room" = "Private_room"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Shared room" = "Shared_room"))
+
+head(Asheville_new_modified)
+```
+
+We removed vars that added noise to the analysis.
+```{r}
+#remove unnecessary variable 
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(room_id))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(host_id))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(room_type))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(neighborhood))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(bedrooms))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(accommodates))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(overall_satisfaction))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(reviews))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(Dist))
+
+
+head(Asheville_new_modified)
+```
+
+We identified outliers and removed them too. We all the rooms with prices above 600.
+
+```{r}
+# Remove extreme values
+
+library(dplyr)
+Asheville_new_modified <- Asheville_new_modified %>% filter(price < 601)
+
+# Get min and max
+max(Asheville_new_modified$price)
+min(Asheville_new_modified$price)
+
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(price))
+
+```
+
+We standarized the numeric variables that were not logged.
+```{r}
+# normalize the vars
+
+max(Asheville_new_modified$latitude)
+min(Asheville_new_modified$latitude)
+max(Asheville_new_modified$longitude)
+
+min(Asheville_new_modified$longitude)
+
+# Scale the variables
+Asheville_new_modified$latitude <- scale(Asheville_new_modified$latitude, center = TRUE, scale = TRUE)
+
+Asheville_new_modified$longitude <- scale(Asheville_new_modified$longitude, center = TRUE, scale = TRUE)
+```
+
+We create the linear regression model with the new features. The ground-truth label is the actual listing price, and we use a variety of regression approaches including linear regression, k nearest neighbor regression, random forest regression, XGBoost, as well as neural network, to predict the value.
+
+```{r}
+# This chunk is for predicting a high satisfaction for a property using neural network
+library(caret)
+library(neuralnet)
+
+# Using NN to predict high satisfaction for a property 
+# this is for investors to use to be able to figure out if a particular property will be well received in asheville
+
+#removed last modified variable and created a subset of the data set 
+Asheville_NN_df<-Asheville_new_modified[,c(2:14)]
+
+# create a training index to generate training and testing sets
+trainIndex <- createDataPartition(Asheville_NN_df$high_satisfaction,                                  
+                                  p=0.7,                                  
+                                  list=FALSE,                                  
+                                  times=1)
+# Create Training Data
+Asheville_NN_train <-Asheville_NN_df [trainIndex,]
+# Create Validation Data
+Asheville_NN_test <-Asheville_NN_df [-trainIndex,]
+
+
+# Train the neural net model (not sure on this part)
+nn <- neuralnet(high_satisfaction~.,data=Asheville_NN_train,hidden=c(5,3),linear.output=FALSE)
+plot(nn)
+
+# make sure the prediction variable is factored so it can be predicted
+Asheville_NN_test$high_satisfaction <- factor(Asheville_NN_test$high_satisfaction)
+
+# prediction code
+prediction.net <- predict(nn,newdata=Asheville_NN_test)
+
+
+prediction.net <- ifelse(prediction.net>0.5,1,0)
+confusionMatrix(as.factor(prediction.net),
+                Asheville_NN_test$high_satisfaction,
+                positive = levels(Asheville_NN_test$high_satisfaction)[2])
+
+
+
+
+```
+
+
+```{r}
+#decision tree model for predicting high satisfaction of a property
+
+library(rpart)
+library(rpart.plot)
+library(pROC)
+
+Asheville_Tree_df<-Asheville_NN_df
+# factor the categorical variables
+Asheville_Tree_df$high_satisfaction <- factor(Asheville_Tree_df$high_satisfaction)
+Asheville_Tree_df$Entire_Home_Apt <- factor(Asheville_Tree_df$Entire_Home_Apt)
+Asheville_Tree_df$Private_room <- factor(Asheville_Tree_df$Private_room)
+Asheville_Tree_df$Shared_room <- factor(Asheville_Tree_df$Shared_room)
+Asheville_Tree_df$Asheville <- factor(Asheville_Tree_df$Asheville)
+Asheville_Tree_df$Formerly_ETJ <- factor(Asheville_Tree_df$Formerly_ETJ)
+Asheville_Tree_df$Richmond_Hill <- factor(Asheville_Tree_df$Richmond_Hill)
+
+# create a training index to generate training and testing sets
+trainIndex <- createDataPartition(Asheville_NN_df$high_satisfaction,                                  
+                                  p=0.7,                                  
+                                  list=FALSE,                                  
+                                  times=1)
+# Create Training Data
+Asheville_Tree_train <-Asheville_Tree_df [trainIndex,]
+# Create Validation Data
+Asheville_Tree_test <-Asheville_Tree_df [-trainIndex,]
+
+# Build a decision tree model
+tree.model <- train(high_satisfaction~.,                    
+                    data=Asheville_Tree_train,
+                    method="rpart",
+                    na.action=na.pass)
+
+# Display decision tree results
+tree.model
+
+#show variable importance of the decision tree
+varImp(tree.model)
+
+prp(tree.model$finalModel,type=2) # Plot An Rpart Model.106 binary 
+
+
+# use model to predict and display the results
+prediction <- predict(tree.model,newdata=Asheville_Tree_test,na.action = na.pass)
+confusionMatrix(prediction,Asheville_Tree_test$high_satisfaction, positive = levels(Asheville_Tree_test$high_satisfaction)[2])
+
+tree.probabilities <- predict(tree.model,
+                              newdata=Asheville_Tree_test,
+                              type='prob',
+                              na.action=na.pass)
+tree.ROC <- roc(predictor=tree.probabilities$`1`,                      
+                response=Asheville_Tree_test$high_satisfaction,                      
+                levels=levels(Asheville_Tree_test$high_satisfaction))
+
+plot(tree.ROC)
+auc <- tree.ROC$auc
+auc
+```
+
+
+```{r}
+#random forest for predicting if a property will receive high satisfaction 
+library(ISLR)
+library(caret)
+library(randomForest)
+
+Asheville_RF_train <-Asheville_Tree_train
+Asheville_RF_test <-Asheville_Tree_test
+
+# random forest model training
+rf_default <- train(high_satisfaction~.,                  
+                    data=Asheville_RF_train,                  
+                    method='rf',                  
+                    metric='Accuracy',                  
+                    ntree=100)
+
+print(rf_default)
+
+# random forest model prediction and display results
+prediction <- predict(rf_default,Asheville_RF_test)
+confusionMatrix(prediction,Asheville_RF_test$high_satisfaction)
+
+
+```
+
