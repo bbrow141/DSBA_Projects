@@ -1,0 +1,1096 @@
+---
+title: "Models with text features"
+author: "ivan Flores"
+date: "5/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Advanced Business Analytics Group Project
+
+*Group Members:*
+
+1. Ivan Flores Martinez
+2. Ellijah Ellison
+3. Tristan Richard
+4. Bailey Brown
+5. Ryon Ripper
+
+## Intro
+
+Airbnb has become increasingly popular among travelers for accommodation across the world. Accordingly, there are large datasets being collected from the Airbnb listings with rich features. In this project, we aim to predict Airbnb listing price in Asheville with various machine learning approaches.
+
+### Load the complete dataset for Ashville
+
+```{r}
+library(readxl)
+Airbnb_asheville_merged <- read_excel("Airbnb_asheville_merged.xlsx")
+head(Airbnb_asheville_merged)
+
+# Rename the database 
+asheville <- Airbnb_asheville_merged
+```
+
+Features are chosen only if they are informative and are likely to correlated with the listing's price. Therefore, we eliminated features like id and host id, which appear to be noise, features like location and country, where the majority of the data take the same value, and features like minstay, where the majority of the data are null.
+
+```{r}
+#remove variables
+library (dplyr)
+asheville <- asheville %>% select(-c(borough))
+asheville <- asheville %>% select(-c(minstay))
+asheville <- asheville %>% select(-c(country))
+asheville <- asheville %>% select(-c(bathrooms))
+asheville <- asheville %>% select(-c(survey_id))
+asheville <- asheville %>% select(-c(name))
+asheville <- asheville %>% select(-c(location))
+asheville <- asheville %>% select(-c(city))
+```
+We removed duplicate listings in the dataset.
+
+```{r}
+#dataset with each unique listing 
+asheville_newest <- asheville %>%
+  arrange(room_id, desc(last_modified)) %>% 
+  distinct(room_id, .keep_all = TRUE)
+```
+
+We identified missing values in the dataset and impute the missings values with the mean.
+
+```{r}
+# Count missing values in variables
+sum(is.na(asheville_newest$overall_satisfaction))
+sum(is.na(asheville_newest$reviews))
+sum(is.na(asheville_newest$accommodates))
+sum(is.na(asheville_newest$bedrooms))
+sum(is.na(asheville_newest$price))
+sum(is.na(asheville_newest$latitude))
+sum(is.na(asheville_newest$longitude))
+
+# Impute the missing values in overall satisfaction
+asheville_newest$overall_satisfaction[is.na(asheville_newest$overall_satisfaction)] <- mean(asheville_newest$overall_satisfaction, na.rm = TRUE)
+
+sum(is.na(asheville_newest$overall_satisfaction))
+```
+
+We created a new variable using the current latitude and longitude variables which calculates the distance of each listing from a central point in downtime Ashville. 
+
+```{r}
+# Create reference point data
+library(sf)
+library(data.table)
+point <- data_frame(mylon = -82.5540, mylat = 35.5946) 
+
+# Specify the source of X and Y coordinates
+point_sf <- st_as_sf(point, coords = c("mylon", "mylat"))
+
+# Set the projection to EPSG 4326 (long-lat)
+st_crs(point_sf) <- 4326
+
+#create target point data
+target <- asheville_newest %>% select(room_id, longitude, latitude)
+                              
+# Convert data.frame to data.table
+setDT(target)
+
+class(target)
+
+# Specify the source of X and Y coordinates
+target_sf <- st_as_sf(target, coords = c("longitude", "latitude"))
+
+# Set the projection to EPSG 4326 (long-lat)
+st_crs(target_sf) <- 4326
+
+# Calculate the distance
+##distance is in Meters
+target_sf2 <- target_sf %>%
+  mutate(Dist = as.numeric(st_distance(point_sf, target_sf, by_element = TRUE))) 
+target_sf2
+
+#add distance to orig. df 
+Asheville_new <- asheville %>%
+  inner_join(target_sf2 , by = "room_id")
+
+#add distance to new df 
+Asheville_new_modified <- asheville_newest %>%
+  inner_join(target_sf2, by = "room_id")
+
+str(Asheville_new_modified)
+
+#remove unnecessary variable 
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(geometry))
+```
+
+We create PCAs for highly correlated variables.
+
+```{r}
+# Correlate the variables
+cor(Asheville_new_modified$bedrooms, Asheville_new_modified$accommodates)
+
+head(Asheville_new_modified)
+
+# Create database for pca
+pca_data <- Asheville_new_modified[,c(7:9)]
+pca <- prcomp(pca_data,center=TRUE,scale. = TRUE)
+print(pca)
+plot(pca,type='l')
+summary(pca)
+
+# Plot PCA
+library(factoextra)
+fviz_eig(pca)
+fviz_pca_var(pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+)
+
+# Predict PCA
+pred_pca <- predict(pca, newdata=pca_data)
+
+# Create dataset for PC values and categorical variables
+Asheville_new_modified <- cbind.data.frame(Asheville_new_modified,pred_pca[,c(1)])
+
+#Rename principal component
+names(Asheville_new_modified)[names(Asheville_new_modified) == 'pred_pca[, c(1)]'] <- 'property_capacity'
+```
+
+We check the distribution of numeric variables to see if they satisfy the normality assumption for the linear regression model. 
+
+```{r}
+library(plyr)
+library(psych)
+multi.hist(Asheville_new_modified[,sapply(Asheville_new_modified, is.numeric)])
+```
+
+Other variables remained with polar distributions (see overall_satisfaction). Consequently, we created a dummy variable that captures if the customer was satisfied with the room or not. 
+
+```{r}
+# Transform overall_satisfaction to dummy
+Asheville_new_modified$high_satisfaction <- ifelse(Asheville_new_modified$overall_satisfaction < 4,0,1)
+```
+
+In addition, we transformed the categorical variables into dummies and renamed them. 
+
+```{r}
+#Dummy variable for room_type
+library(fastDummies)
+
+Asheville_new_modified <- dummy_cols(Asheville_new_modified, select_columns = 'room_type')
+
+#Dummy variable for neighbourhood
+Asheville_new_modified <- dummy_cols(Asheville_new_modified, select_columns = 'neighborhood')
+
+#Rename dummy columns associated with neighborhood
+
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Asheville" = "Asheville"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Richmond Hill" = "Richmond_Hill"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("neighborhood_Formerly ETJ" = "Formerly_ETJ"))
+
+#Rename dummy columns associated with room type
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Entire home/apt" = "Entire_Home_Apt"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Private room" = "Private_room"))
+Asheville_new_modified <- rename(Asheville_new_modified, c("room_type_Shared room" = "Shared_room"))
+
+head(Asheville_new_modified)
+```
+
+We removed vars that added noise to the analysis.
+
+```{r}
+#remove unnecessary variable 
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(room_id))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(host_id))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(room_type))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(neighborhood))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(bedrooms))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(accommodates))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(overall_satisfaction))
+Asheville_new_modified <- Asheville_new_modified %>% select(-c(last_modified))
+head(Asheville_new_modified)
+```
+
+We identified outliers and removed them too. We all the rooms with prices above 600.
+
+```{r}
+# Remove extreme values
+
+library(dplyr)
+Asheville_new_modified <- Asheville_new_modified %>% filter(price < 601)
+
+# Get min and max
+max(Asheville_new_modified$price)
+min(Asheville_new_modified$price)
+```
+## Create dataset without text features for all the models
+
+First, We standardized the numeric variables.
+
+```{r}
+# Scale numeric variables
+maxs <- apply(Asheville_new_modified,2,max)
+mins <- apply(Asheville_new_modified,2,min)
+
+Asheville_scaled <- as.data.frame(scale(Asheville_new_modified, center = mins, scale=maxs-mins)) # (x-a)/(b-a) 
+```
+
+Second, we split the data into training and test set.
+
+```{r}
+
+#Create id
+library(caret)
+set.seed(110)
+
+Asheville_scaled$id <- seq.int(nrow(Asheville_scaled))
+
+#Split data
+Asheville.train <- Asheville_scaled %>% sample_frac(0.70)
+Asheville.test <- anti_join(Asheville_scaled, Asheville.train, by="id")
+
+#Remove the id from training and test set
+Asheville.train$id <- NULL
+Asheville.test$id <- NULL
+```
+
+### Text mining
+
+In addition to the continuous features, we also extracted text and performed feature engineering. We start by creating a corpus.
+
+```{r}
+# Establish the corpus and initial DFM matrix
+library(quanteda)
+myCorpus <- corpus(Airbnb_asheville_merged$name)
+summary(myCorpus)
+
+myDfm <- dfm(myCorpus)
+dim(myDfm)
+```
+
+Then, we get the most frequent terms.
+
+```{r}
+# Simple frequency analyses
+library(quanteda.textstats)
+tstat_freq <- textstat_frequency(myDfm)
+head(tstat_freq, 20)
+
+docvars(myCorpus, "room_id") <- Airbnb_asheville_merged$room_id 
+summary(myCorpus)
+```
+
+We removed stopwords and less frequent terms.
+
+```{r}
+# Remove stop words & perform stemming 
+myDfm <- dfm(myCorpus,
+               remove_numbers = T,
+               remove_punc = T,
+               remove = c(stopwords("english"), "~", "w", "b"),
+               stem = T)
+
+topfeatures(myDfm,50)
+
+myDfm<- dfm_trim(myDfm,min_termfreq=4, min_docfreq=2)
+```
+We created a word cloud of our tokens.
+
+```{r}
+library(quanteda.textplots)
+# Wordcloud
+textplot_wordcloud(myDfm,max_words=200)
+dim(myDfm)
+```
+
+We create a tfidf dataframe and run lsa to get the new text features.
+
+```{r}
+library (quanteda.textmodels)
+# Perform SVD for dimension reduction
+modelDfm_tfidf <- dfm_tfidf(myDfm)
+dim(modelDfm_tfidf)
+
+modelSvd <- textmodel_lsa(modelDfm_tfidf, nd = 8)
+barplot(modelSvd$sk)
+
+ReducedData <- modelSvd$docs %*% diag(modelSvd$sk) 
+```
+
+We merge the new data to the original dataset.
+
+```{r}
+# Add the non-text information 
+modelData <- cbind(Airbnb_asheville_merged, as.data.frame(ReducedData)) 
+str(modelData)
+```
+
+We remove duplicate listings.
+
+```{r}
+#dataset with each unique listing 
+asheville_textfeatures <- modelData %>%
+  arrange(room_id, desc(last_modified)) %>% 
+  distinct(room_id, .keep_all = TRUE)
+```  
+  
+We create merge the text features to the cleaned dataset.
+
+```{r}
+  library(dplyr)
+  #create id
+  asheville_textfeatures$id <- seq.int(nrow(asheville_textfeatures))
+  head(asheville_textfeatures)
+  
+  # extract text features
+  textfeatures <- asheville_textfeatures %>% select(id,V1,V2,V3,V4,V5,V6,V7,V8)
+  head(textfeatures)
+  
+  #Create id
+  Asheville_new_modified$id <- seq.int(nrow(Asheville_new_modified))
+  
+  #merge the datasets
+  data_plustext <- merge(Asheville_scaled,textfeatures,by="id")
+  head(data_plustext)
+```  
+
+Apply the same process to the data with text features.
+
+```{r}
+#Create id
+library(caret)
+set.seed(110)
+
+#Split data
+Asheville_plustext.train <- data_plustext %>% sample_frac(0.70)
+Asheville_plustext.test <- anti_join(data_plustext, Asheville_plustext.train, by="id")
+
+#Remove the id from training and test set
+Asheville_plustext.train$id <- NULL
+Asheville_plustext.test$id <- NULL
+```
+
+## Neural Network
+
+```{r}
+# Train the neural net model
+library(neuralnet)
+
+nn <- neuralnet(price ~ reviews + high_satisfaction + latitude + longitude + property_capacity + Dist + Richmond_Hill + Formerly_ETJ + Private_room + Entire_Home_Apt, data=Asheville.train, hidden = c(2),
+                algorithm = "rprop+",
+                linear.output=TRUE)
+
+#Plot a neural network                
+plot(nn)
+```
+NN tend to overfit to the training dataset. We tried different number of hidden layers and units. The model that performs is shown above. It has one hidden layer with two units. The second best model had four hidden layers with 4,3,2,1 units. We find that simpler neural architectures generalises better.
+
+## Model Evaluation
+```{r}
+# Predict
+test_no_target <- subset(Asheville.test, select=-c(price))
+pr.nn <- neuralnet::compute(nn, test_no_target)
+
+# Results from NN are normalized (scaled). We need to rescale for comparison.
+pr.nn_ <- pr.nn$net.result*(max(Asheville_new_modified$price)-min(Asheville_new_modified$price))+min(Asheville_new_modified$price)
+
+# Calculating MSE
+MSE.nn <- sum((Asheville.test$price - pr.nn$net.result)^2)/nrow(Asheville.test)
+RMSE.nn <-  sqrt(MSE.nn)
+RMSE.nn
+```
+
+Plot the residuals. Think about removing the outliers (drop rooms with prices above 300?)
+
+```{r}
+plot(Asheville.test$price, pr.nn_, col = "red", 
+     main = 'Real vs Predicted')
+abline(0, 1, lwd = 2)
+```
+
+Compute the R squared for the neural network (Test dataset)
+
+```{r}
+ydi<- Asheville.test$price
+yi<- predict(nn,test_no_target)
+ym<-mean(Asheville.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+
+```
+
+## Neural Network with text features
+
+```{r}
+# Train the neural net model
+library(neuralnet)
+
+nn_text <- neuralnet(price ~ reviews + high_satisfaction + latitude + longitude + property_capacity + Dist + Richmond_Hill + Formerly_ETJ + Private_room + Entire_Home_Apt + V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8, data=Asheville_plustext.train, hidden = c(2),
+                algorithm = "rprop+",
+                linear.output=TRUE)
+
+#Plot a neural network                
+plot(nn_text)
+```
+
+## Model Evaluation
+
+```{r}
+# Predict
+test_no_target2 <- subset(Asheville_plustext.test, select=-c(price))
+pr.nn2 <- neuralnet::compute(nn_text, test_no_target2)
+
+# Results from NN are normalized (scaled). We need to rescale for comparison.
+pr.nn2_ <- pr.nn2$net.result*(max(data_plustext$price)-min(data_plustext$price))+min(data_plustext$price)
+
+# Calculating MSE
+MSE2.nn <- sum((Asheville_plustext.test$price - pr.nn2$net.result)^2)/nrow(Asheville_plustext.test)
+RMSE2.nn <-  sqrt(MSE2.nn)
+RMSE2.nn
+```
+
+Compute the R squared for the neural network with text features (Test dataset)
+
+```{r}
+ydi<- Asheville_plustext.test$price
+yi<- predict(nn_text,test_no_target2)
+ym<-mean(Asheville_plustext.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+The neural network performs worst with text features, probably due to overfilling.
+
+## Random forest
+
+```{r}
+require(randomForest)
+
+Asheville.rf = randomForest(price~., data = Asheville.train)
+Asheville.rf
+
+plot(Asheville.rf)
+```
+
+We can see how the error drops significantly after 100 trees.
+
+```{r}
+# Create var to store out of bag error and test error
+oob.err=double(12)
+test.err=double(12)
+
+#Find optimal mtry
+for(mtry in 1:12) 
+{
+  Asheville.rf=randomForest(price~., data = Asheville.train, mtry=mtry,ntree=400) 
+  oob.err[mtry] = Asheville.rf$mse[400] #Error of all Trees fitted
+  
+  pred<-predict(Asheville.rf,Asheville.train) #Predictions on Test Set for each Tree
+  test.err[mtry]= with(Asheville.train, mean(price - as.numeric(pred))^2) #Mean Squared Test Error
+  cat(mtry," ") #printing the output to the console
+  
+}
+
+#Print test error and out of bag error
+test.err
+oob.err
+
+#Plot error
+matplot(1:mtry, cbind(oob.err,test.err), pch=19 , col=c("red","blue"),type="b",ylab="Mean Squared Error",xlab="Number of Predictors Considered at each Split")
+legend("topright",legend=c("Out of Bag Error","Test Error"),pch=19, col=c("red","blue"))
+
+#Plot the feature importance
+varImpPlot(Asheville.rf)
+
+# number of trees with lowest MSE
+which.min(Asheville.rf$mse)
+## [1] 187
+
+# RMSE of this optimal random forest
+sqrt(Asheville.rf$mse[which.min(Asheville.rf$mse)])
+
+# Get R squared of this optimal random forest
+ydi<- Asheville.test$price
+yi<- predict(Asheville.rf,test_no_target)
+ym<-mean(Asheville.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+Results that a tuned random forest model performs best at predicting price in  the test dataset.
+
+## Random forest with text features
+
+```{r}
+require(randomForest)
+
+Asheville.rf_text = randomForest(price~., data = Asheville_plustext.train)
+Asheville.rf_text
+
+plot(Asheville.rf_text)
+
+```
+
+We can see how the error drops significantly after 50 trees.
+
+```{r}
+# Create var to store out of bag error and test error
+oob.err2=double(12)
+test.err2=double(12)
+
+#Find optimal mtry
+for(mtry in 1:12) 
+{
+  Asheville.rf_text=randomForest(price~., data = Asheville_plustext.train, mtry=mtry,ntree=400) 
+  oob.err2[mtry] = Asheville.rf_text$mse[400] #Error of all Trees fitted
+  
+  pred2<-predict(Asheville.rf_text,Asheville_plustext.train) #Predictions on Test Set for each Tree
+  test.err2[mtry]= with(Asheville_plustext.train, mean(price - as.numeric(pred))^2) #Mean Squared Test Error
+  cat(mtry," ") #printing the output to the console
+  
+}
+
+#Print test error and out of bag error
+test.err2
+oob.err2
+
+#Plot error
+matplot(1:mtry, cbind(oob.err2,test.err2), pch=19 , col=c("red","blue"),type="b",ylab="Mean Squared Error",xlab="Number of Predictors Considered at each Split")
+legend("topright",legend=c("Out of Bag Error","Test Error"),pch=19, col=c("red","blue"))
+
+#Plot the feature importance
+varImpPlot(Asheville.rf_text)
+
+# number of trees with lowest MSE
+which.min(Asheville.rf_text$mse)
+## [1] 187
+
+# RMSE of this optimal random forest
+sqrt(Asheville.rf_text$mse[which.min(Asheville.rf_text$mse)])
+
+# Get R squared of this optimal random forest
+ydi<- Asheville_plustext.test$price
+yi<- predict(Asheville.rf_text,test_no_target2)
+ym<-mean(Asheville_plustext.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+## KNN model
+
+```{r}
+# Subset the database
+library(dplyr)
+dtrain.x <- Asheville.train %>% select(-price) # remove price
+dtrain.y <- Asheville.train %>% select(price) # keep only price
+
+dtest.x <- Asheville.test %>% select(-price) # remove price
+dtest.y <- Asheville.test %>% select(price) # keep only price
+```
+
+To get the optimal number of k, we compared several knn models and choose the model with the lowest MSE. 
+
+```{r}
+# run several knn with different K values
+model <- kknn::train.kknn(price~., data = Asheville.train, kmax = 30)
+model
+
+#Visualize knn regression and MSE error
+plot(model)
+```
+
+The k value that minimizes the MSE is 12.
+
+## Prepare the data for Knn.
+
+Train KNN with the optimal number of k. 
+
+```{r}
+# Train a knn regression 
+library(FNN)
+pred.a <- FNN::knn.reg(dtrain.x, dtest.x, dtrain.y, k = 12)
+```
+
+Then, we get the predictions for our test data.
+
+```{r}
+#Make a copy of our dataset containing the true values of the dependent variable for the testing data. This dataset was called dtest.y and the new copy of it will be called dtest.y.results:
+dtest.y.results <- dtest.y
+
+#Next, we will add the predictions made in pred.a to the new dtest.y.results dataset:
+dtest.y.results$k12.pred <- pred.a$pred
+
+#Look at the predictions
+head(dtest.y.results,n=nrow(dtest.y.results))
+```
+
+Let’s calculate the RMSE for the predictive model we just made. To do this, we use the rmse function from the Metrics package and we feed the actual and predicted values into the function:
+
+```{r}
+library(Metrics)
+rmse(dtest.y.results$price,dtest.y.results$k12.pred)
+```
+
+Get the R squared 
+
+```{r}
+# Get R squared
+ydi<- Asheville.test$price
+yi<- dtest.y.results$k12.pred
+ym<-mean(Asheville.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+The KNN has a reasonable performance. It achieves a R-squared of 0.57. 
+
+## KNN with text features.
+
+```{r}
+# Subset the database
+library(dplyr)
+dtrain_plustext.x <- Asheville_plustext.train %>% select(-price) # remove price
+dtrain_plustext.y <- Asheville_plustext.train %>% select(price) # keep only price
+
+dtest_plustext.x <- Asheville_plustext.test %>% select(-price) # remove price
+dtest_plustext.y <- Asheville_plustext.test %>% select(price) # keep only price
+```
+
+Now we train the KNN model with the text features 
+
+```{r}
+# Train a knn regression 
+
+library(FNN)
+pred.a.text <- FNN::knn.reg(dtrain_plustext.x, dtest_plustext.x, dtrain.y, k = 12)
+
+```
+
+```{r}
+#Make a copy of our dataset containing the true values of the dependent variable for the testing data. This dataset was called dtest.y and the new copy of it will be called dtest.y.results:
+dtestplustext.y.results <- dtest_plustext.y
+
+#Next, we will add the predictions made in pred.a to the new dtest.y.results dataset:
+dtestplustext.y.results$k12_text.pred <- pred.a.text$pred
+
+#Look at the predictions
+head(dtestplustext.y.results,n=nrow(dtestplustext.y.results))
+```
+
+Let’s calculate the RMSE for the predictive model we just made. To do this, we use the rmse function from the Metrics package and we feed the actual and predicted values into the function:
+
+```{r}
+library(Metrics)
+rmse(dtestplustext.y.results$price,dtestplustext.y.results$k12_text)
+```
+
+Get the R squared 
+
+```{r}
+# Get R squared
+ydi<- Asheville_plustext.test$price
+yi<- dtestplustext.y.results$k12_text
+ym<-mean(Asheville_plustext.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+KNN performs worst with the text features. This occurs because the clusters are of lower quality.
+
+## Decision Tree
+
+```{r}
+# Train a decision tree
+library(rpart)
+library(rattle)
+tree1 <- rpart(price ~ ., data=Asheville.train, method = 'anova')
+
+# Plot the decision tree
+
+fancyRpartPlot(tree1, caption = "Regression Tree")
+```
+
+The plot above shows the variable importance
+
+```{r}
+# Get the variable importance
+library(caret)
+(varimp.tree1 <- varImp(tree1))
+```
+
+Predict on new data. 
+```{r}
+dtest.y$tree1.pred <- predict(tree1, newdata = dtest.x)
+head(dtest.y)
+```
+
+Let’s calculate the RMSE for the predictive model we just made. To do this, we use the rmse function from the Metrics package and we feed the actual and predicted values into the function:
+
+```{r}
+library(Metrics)
+rmse(dtest.y$price,dtest.y$tree1.pred)
+```
+
+Compute the R squared.
+
+```{r}
+# Get R squared
+ydi<- Asheville.test$price
+yi<- predict(tree1, newdata = dtest.x)
+ym<-mean(Asheville.test$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+
+## Decision Tree with text features
+
+```{r}
+# Train a decision tree
+library(rpart)
+library(rattle)
+tree1_text <- rpart(price ~ ., data=Asheville_plustext.train, method = 'anova')
+
+# Plot the decision tree
+
+fancyRpartPlot(tree1_text, caption = "Regression Tree")
+```
+
+The plot above shows the variable importance
+
+```{r}
+# Get the variable importance
+library(caret)
+(varimp.tree1_text <- varImp(tree1_text))
+```
+
+Predict on new data. 
+```{r}
+dtest.y$tree1_text.pred <- predict(tree1_text, newdata = dtest_plustext.x)
+head(dtest.y)
+```
+
+Let’s calculate the RMSE for the predictive model we just made. To do this, we use the rmse function from the Metrics package and we feed the actual and predicted values into the function:
+
+```{r}
+library(Metrics)
+rmse(dtest.y$price,dtest.y$tree1_text.pred)
+```
+
+Compute the R squared.
+
+```{r}
+# Get R squared
+ydi<- dtest_plustext.y$price
+yi<- predict(tree1_text, newdata = dtest_plustext.x)
+ym<-mean(dtest_plustext.y$price)
+R<-1- ((sum((yi-ydi)^2))/(sum((ydi-ym)^2)))
+R
+```
+The model performs better with text features.
+
+## Boosted decision tree
+
+```{r}
+# xgb.DMatrix class for xgboost
+library(dplyr)
+library(xgboost)
+X_train = xgb.DMatrix(as.matrix(Asheville.train %>% select(-price)))
+
+y_train = Asheville.train$price  # Training set reponse label
+
+X_test = xgb.DMatrix(as.matrix(Asheville.test %>% select(-price)))
+
+y_test = Asheville.test$price  # Test set response label
+
+
+# Use caret trainControl to control the computational nuances of xgboost
+
+# the train function
+library(caret)
+xgb_trainControl = trainControl(
+                method = "cv",
+                number = 5,  
+                returnData = FALSE
+)
+
+ 
+# Set up data frame with tuning parameters:
+
+# nrounds – Number of Boosting Iterations
+
+# max_depth – Max Tree Depth
+
+# colsample_bytree – Subsample Ratio of Columns
+
+# eta – Shrinkage
+
+# gamma – Minimum Loss Reduction
+
+# min_child_weight – Minimum Sum of Instance Weight
+
+# subsample – Subsample Percentage
+
+xgb_grid <- expand.grid(nrounds = 50,  
+
+                        max_depth = 5,
+
+                        eta = 0.1,
+
+                        gamma=0,
+
+                        colsample_bytree = 0.9,
+
+                        min_child_weight = 1,
+
+                        subsample = 1
+
+)
+
+# Set up data frame with tuning parameters:
+
+# nrounds – Number of Boosting Iterations
+
+# max_depth – Max Tree Depth
+
+# colsample_bytree – Subsample Ratio of Columns
+
+# eta – Shrinkage
+
+# gamma – Minimum Loss Reduction
+
+# min_child_weight – Minimum Sum of Instance Weight
+
+# subsample – Subsample Percentage
+
+
+```
+ 
+Train an xgboost model.
+
+```{r}
+# Select xgbTree for using xgboost
+library(caret)
+set.seed(0) 
+
+xgb1 = caret::train(
+  X_train, y_train,  
+  trControl = xgb_trainControl,
+  tuneGrid = xgb_grid,
+  method = "xgbTree")
+```
+## Evaluate Model
+
+Next, we need to evaluate the model using a couple of widely used metrics, Root Mean Square Error (RMSE), and R-squared. We’ll use the predict function to deliver the predicted values and then from there we calculate the residuals. 
+
+Let’s calculate the RMSE for the predictive model we just made. 
+
+```{r}
+# Calculate the root mean square error (RMSE) for test set
+
+pred = predict(xgb1, X_test)
+
+residuals = y_test - pred
+
+RMSE = sqrt(mean(residuals^2))
+
+print(RMSE)
+```
+
+Let’s calculate the R squared for the predictive model we just made.
+
+```{r}
+# Calculate R-squared for test set
+
+y_test_mean = mean(y_test)
+
+# Calculate total sum of squares
+
+TSS =  sum((y_test - y_test_mean)^2 )
+
+# Calculate residual sum of squares
+
+RSS =  sum(residuals^2)
+
+# Calculate R-squared
+
+R_squared  = 1 - (RSS/TSS)
+
+print(R_squared)
+```
+## XGBosst with text features.
+
+```{r}
+# xgb.DMatrix class for xgboost
+library(dplyr)
+library(xgboost)
+X_train = xgb.DMatrix(as.matrix(Asheville_plustext.train %>% select(-price)))
+
+y_train = Asheville_plustext.train$price  # Training set reponse label
+
+X_test = xgb.DMatrix(as.matrix(Asheville_plustext.test %>% select(-price)))
+
+y_test = Asheville_plustext.test$price  # Test set response label
+
+
+# Use caret trainControl to control the computational nuances of xgboost
+
+# the train function
+library(caret)
+xgb_trainControl = trainControl(
+                method = "cv",
+                number = 5,  
+                returnData = FALSE
+)
+
+ 
+# Set up data frame with tuning parameters:
+
+# nrounds – Number of Boosting Iterations
+
+# max_depth – Max Tree Depth
+
+# colsample_bytree – Subsample Ratio of Columns
+
+# eta – Shrinkage
+
+# gamma – Minimum Loss Reduction
+
+# min_child_weight – Minimum Sum of Instance Weight
+
+# subsample – Subsample Percentage
+
+xgb_grid <- expand.grid(nrounds = 50,  
+
+                        max_depth = 5,
+
+                        eta = 0.1,
+
+                        gamma=0,
+
+                        colsample_bytree = 0.9,
+
+                        min_child_weight = 1,
+
+                        subsample = 1
+
+)
+```
+ 
+Train an xgboost model with text features.
+
+```{r}
+# Select xgbTree for using xgboost
+
+library(caret)
+set.seed(0) 
+
+xgb1_text = caret::train(
+  X_train, y_train,  
+  trControl = xgb_trainControl,
+  tuneGrid = xgb_grid,
+  method = "xgbTree")
+```
+ 
+## Evaluate Model
+
+Next, we need to evaluate the model using a couple of widely used metrics, Root Mean Square Error (RMSE), and R-squared. We’ll use the predict function to deliver the predicted values and then from there we calculate the residuals. 
+
+Let’s calculate the RMSE for the predictive model we just made. 
+
+```{r}
+# Calculate the root mean square error (RMSE) for test set
+
+pred = predict(xgb1_text, X_test)
+
+residuals = y_test - pred
+
+RMSE = sqrt(mean(residuals^2))
+
+print(RMSE)
+```
+
+Let’s calculate the R squared for the predictive model we just made.
+
+```{r}
+# Calculate R-squared for test set
+
+y_test_mean = mean(y_test)
+
+# Calculate total sum of squares
+
+TSS =  sum((y_test - y_test_mean)^2 )
+
+# Calculate residual sum of squares
+
+RSS =  sum(residuals^2)
+
+# Calculate R-squared
+
+R_squared  = 1 - (RSS/TSS)
+
+print(R_squared)
+```
+
+The model performs worts with text features.
+
+## Linear Regression
+```{r}
+#regression model
+glm_ashville <- glm(price ~ reviews + high_satisfaction + latitude + longitude + property_capacity + Dist + Richmond_Hill + Formerly_ETJ + Private_room + Entire_Home_Apt, data=Asheville.train)
+
+summary(glm_ashville)
+```
+
+To evaluate the model performance, we compute the R squared and the Root Mean Square Errors of the linear model in the training and test datasets. 
+
+```{r}
+#Get the RMSE of training data
+RSS <- c(crossprod(glm_ashville$residuals))
+MSE <- RSS/length(glm_ashville$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+
+#Get the R squared of training data
+with(summary(glm_ashville), 1 - deviance/null.deviance)
+```
+
+```{r}
+# Make predictions
+predictions <- glm_ashville %>% predict(Asheville.test)
+
+# (a) Prediction error, RMSE
+RMSE(predictions, Asheville.test$price)
+# (b) R-square
+R2(predictions, Asheville.test$price)
+```
+
+```{r}
+#regression model with text mining 
+glm_textmining <- glm(price ~ reviews + high_satisfaction + latitude + longitude + property_capacity + Dist + Richmond_Hill + Formerly_ETJ + Private_room + Entire_Home_Apt + V1 + V2 + V3 + V4 + V5 + V6 + V7 + V8, data=Asheville_plustext.train)
+
+summary(glm_textmining)
+```
+
+To evaluate the model performance, we compute the R squared and the Root Mean Square Errors of the linear model in the training and test datasets. 
+
+```{r}
+#Get the RMSE of training data
+RSS <- c(crossprod(glm_textmining$residuals))
+MSE <- RSS/length(glm_textmining$residuals)
+RMSE <- sqrt(MSE)
+RMSE
+
+#Get the R squared of training data
+with(summary(glm_textmining), 1 - deviance/null.deviance)
+```
+
+```{r}
+# Make predictions
+predictions <- glm_textmining %>% predict(Asheville_plustext.test)
+
+# (a) Prediction error, RMSE
+RMSE(predictions, Asheville_plustext.test$price)
+# (b) R-square
+R2(predictions, Asheville_plustext.test$price)
+```
